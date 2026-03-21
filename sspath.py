@@ -1,4 +1,4 @@
-"""imgpath.py — Screenshot Path Interceptor
+"""sspath.py — Screenshot Path Interceptor
 
 When enabled, intercepts screenshots and replaces the clipboard with the
 file path to that screenshot, formatted for the active terminal:
@@ -132,7 +132,7 @@ def save_clipboard_image() -> str:
     """
     SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    filepath = SCREENSHOTS_DIR / f"imgpath_{timestamp}.png"
+    filepath = SCREENSHOTS_DIR / f"sspath_{timestamp}.png"
     img = ImageGrab.grabclipboard()
     if img is None:
         raise RuntimeError("No image on clipboard")
@@ -142,7 +142,7 @@ def save_clipboard_image() -> str:
 
 # ── App ────────────────────────────────────────────────────────────────────────
 
-class ImgPathApp:
+class SsPathApp:
     def __init__(self):
         self.enabled = False
         self.known_files: set = set()
@@ -164,7 +164,7 @@ class ImgPathApp:
 
         # Tkinter window
         self.root = tk.Tk()
-        self.root.title("imgpath")
+        self.root.title("sspath")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._hide)
         self._build_ui()
@@ -183,7 +183,7 @@ class ImgPathApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._quit),
         )
-        self.tray = pystray.Icon("imgpath", icon_img, "imgpath — OFF", menu)
+        self.tray = pystray.Icon("sspath", icon_img, "sspath — OFF", menu)
         threading.Thread(target=self.tray.run, daemon=True).start()
 
         # Start polling loop (stays on main thread via after())
@@ -196,7 +196,7 @@ class ImgPathApp:
         frame = tk.Frame(self.root, padx=32, pady=24)
         frame.pack(fill="both", expand=True)
 
-        tk.Label(frame, text="imgpath", font=("Segoe UI", 18, "bold")).pack()
+        tk.Label(frame, text="sspath", font=("Segoe UI", 18, "bold")).pack()
         tk.Label(
             frame,
             text="Screenshot → clipboard path",
@@ -235,11 +235,11 @@ class ImgPathApp:
         if self.enabled:
             self.btn.config(text="● ON", bg="#2e7d32", activebackground="#1b5e20")
             self.status.set("Monitoring...")
-            self.tray.title = "imgpath — ON"
+            self.tray.title = "sspath — ON"
         else:
             self.btn.config(text="● OFF", bg="#c62828", activebackground="#b71c1c")
             self.status.set("Idle")
-            self.tray.title = "imgpath — OFF"
+            self.tray.title = "sspath — OFF"
 
     def _hide(self):
         self.root.withdraw()
@@ -334,5 +334,5 @@ class ImgPathApp:
 
 
 if __name__ == "__main__":
-    app = ImgPathApp()
+    app = SsPathApp()
     app.run()
