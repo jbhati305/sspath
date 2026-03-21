@@ -2,7 +2,7 @@
 
 **Takes a screenshot → puts the file path in your clipboard.**
 
-No more dragging files or hunting through Explorer. sspath watches for new screenshots and instantly replaces the clipboard image with the path to that file — formatted for whichever terminal you were just in.
+No more dragging files or hunting through File Explorer. sspath watches for new screenshots and instantly replaces the clipboard image with the path to that file — formatted for whichever terminal you were just in. Created to streamline Claude Code workflow.
 
 ---
 
