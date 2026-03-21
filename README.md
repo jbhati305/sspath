@@ -1,4 +1,5 @@
-# sspath
+![Video Project 1](https://github.com/user-attachments/assets/1174c710-4b44-46b3-9752-6788b9c07973)# sspath
+![Video Project 1](https://github.com/user-attachments/assets/33eba580-bc72-490c-a9c3-ec515bc290fd)
 
 **Takes a screenshot → puts the file path in your clipboard.**
 
