@@ -8,7 +8,7 @@ No more dragging files or hunting through File Explorer. sspath watches for new 
 
 ## Download
 
-Go to [Releases](../../releases) and download `sspath.exe`. No Python required.
+Go to [Releases](../../releases) and download `sspath.exe`. Currently Windows only.
 
 ---
 
