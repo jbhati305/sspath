@@ -1,0 +1,14 @@
+[project]
+name = "sspath"
+version = "0.1.0"
+description = "Screenshot path interceptor — copies the file path of a screenshot to your clipboard"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow",
+    "pystray",
+    "pywin32 ; sys_platform == 'win32'",
+    "psutil ; sys_platform == 'win32'",
+]
+
+[project.scripts]
+sspath = "sspath:main"

@@ -1,4 +1,15 @@
-pywin32
+# Kept for reference. Use pyproject.toml + uv for development.
+# uv sync  →  installs the right deps per platform automatically.
+
+# All platforms
 Pillow
 pystray
+
+# Windows only
+pywin32
 psutil
+
+# Linux system packages (not pip-installable):
+#   sudo apt install python3-tk
+#   sudo apt install xclip         # X11
+#   sudo apt install wl-clipboard  # Wayland

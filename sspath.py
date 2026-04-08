@@ -1,44 +1,64 @@
 """sspath.py — Screenshot Path Interceptor
 
 When enabled, intercepts screenshots and replaces the clipboard with the
-file path to that screenshot, formatted for the active terminal:
-  - WSL terminal  → /mnt/c/Users/...
+file path to that screenshot, formatted for the active terminal.
+
+Windows:
+  - WSL terminal   → /mnt/c/Users/...
   - PowerShell/CMD → C:\\Users\\...
   - Unknown        → both paths (WSL on line 1, Windows on line 2)
 
-Handles two screenshot scenarios:
-  1. Win+PrtSc      → file auto-saved to Pictures\\Screenshots; watches folder
-  2. Win+Shift+S /
-     PrtSc /
-     Alt+PrtSc      → image goes to clipboard only; saves it, then copies path
+Linux:
+  - Always the native path: /home/user/Pictures/Screenshots/...
+  - Supports X11 (xclip) and Wayland (wl-clipboard)
 
-Dependencies: pip install pywin32 Pillow pystray psutil
-Run from Windows Python (not WSL).
+Handles two screenshot scenarios:
+  1. Saved-to-file  → watches the Screenshots folder for new PNGs
+  2. Clipboard-only → saves the image, then copies the path
+
+Windows dependencies: pip install pywin32 Pillow pystray psutil
+Linux dependencies:   pip install Pillow pystray
+                      apt install xclip        (X11)
+                      apt install wl-clipboard  (Wayland)
+Run from native Python (not WSL on Windows).
 """
 
+import atexit
 import os
+import sys
 import hashlib
+import subprocess
 import threading
 import getpass
-import ctypes
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import tkinter as tk
-import win32clipboard
-import win32con
-import win32gui
-import win32process
-import psutil
-from PIL import Image, ImageDraw, ImageGrab
+from PIL import Image, ImageDraw
 import pystray
+
+IS_WINDOWS = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
+
+if IS_WINDOWS:
+    import ctypes
+    import win32clipboard
+    import win32con
+    import win32gui
+    import win32process
+    import psutil
+    from PIL import ImageGrab
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-USERNAME = os.environ.get("USERNAME") or getpass.getuser()
-SCREENSHOTS_DIR = Path(f"C:\\Users\\{USERNAME}\\Pictures\\Screenshots")
 POLL_MS = 500
+
+if IS_WINDOWS:
+    USERNAME = os.environ.get("USERNAME") or getpass.getuser()
+    SCREENSHOTS_DIR = Path(f"C:\\Users\\{USERNAME}\\Pictures\\Screenshots")
+else:
+    SCREENSHOTS_DIR = Path.home() / "Pictures" / "Screenshots"
 
 WSL_PROCS = {
     "wsl.exe", "bash.exe", "ubuntu.exe", "debian.exe", "kali.exe",
@@ -59,23 +79,30 @@ def to_wsl_path(win_path: str) -> str:
     return p
 
 
-def format_path(win_path: str, target: str) -> str:
+def format_path(path: str, target: str) -> str:
     """Return path string appropriate for the detected terminal."""
+    if IS_LINUX:
+        return path  # always a native Linux path
     if target == "wsl":
-        return to_wsl_path(win_path)
+        return to_wsl_path(path)
     if target == "windows":
-        return win_path
+        return path
     # unknown: provide both so the user can pick
-    return f"{to_wsl_path(win_path)}\n{win_path}"
+    return f"{to_wsl_path(path)}\n{path}"
 
 
 # ── Terminal detection ─────────────────────────────────────────────────────────
 
 def detect_target_terminal() -> str:
     """
-    Inspect the foreground window's process to determine terminal type.
-    Returns 'wsl', 'windows', or 'unknown'.
+    Determine the terminal type in use.
+    Linux always returns 'linux'.
+    Windows inspects the foreground window's process tree.
+    Returns 'wsl', 'windows', 'linux', or 'unknown'.
     """
+    if IS_LINUX:
+        return "linux"
+
     try:
         hwnd = win32gui.GetForegroundWindow()
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
@@ -100,44 +127,144 @@ def detect_target_terminal() -> str:
     return "unknown"
 
 
+# ── Display server (Linux) ─────────────────────────────────────────────────────
+
+def _linux_display_server() -> str:
+    """Returns 'wayland' or 'x11'."""
+    if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
+        return "wayland"
+    return "x11"
+
+
+# Cached once at startup — display server doesn't change while the app runs.
+_DISPLAY_SERVER: str = _linux_display_server() if IS_LINUX else ""
+
+
+# ── Wayland clipboard watcher (event-driven, replaces per-poll wl-paste) ──────
+
+if IS_LINUX:
+    _WAYLAND_FLAG = Path(f"/tmp/sspath_{os.getpid()}.flag")
+    atexit.register(lambda: _WAYLAND_FLAG.unlink(missing_ok=True))
+
+_wayland_flag_mtime: float = 0.0
+
+
+def _start_wayland_watcher() -> Optional[subprocess.Popen]:
+    """
+    Start a single long-running `wl-paste --watch touch FLAG` process.
+    It touches FLAG whenever the clipboard changes — no per-poll subprocess
+    spawning needed.  Returns the Popen object so the caller can terminate it.
+    """
+    try:
+        return subprocess.Popen(
+            ["wl-paste", "--watch", "touch", str(_WAYLAND_FLAG)],
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return None
+
+
+def _wayland_flag_changed() -> bool:
+    """True if the clipboard has changed since the last call (mtime check)."""
+    global _wayland_flag_mtime
+    try:
+        mtime = _WAYLAND_FLAG.stat().st_mtime
+        if mtime != _wayland_flag_mtime:
+            _wayland_flag_mtime = mtime
+            return True
+    except FileNotFoundError:
+        pass
+    return False
+
+
+def _x11_clipboard_has_image() -> bool:
+    """Lightweight X11 pre-check: list MIME types without downloading content."""
+    try:
+        result = subprocess.run(
+            ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
+            capture_output=True, timeout=2,
+        )
+        return b"image/" in result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 # ── Clipboard helpers ──────────────────────────────────────────────────────────
 
-def get_clipboard_dib() -> Optional[bytes]:
-    """Return raw CF_DIB bytes if the clipboard contains an image, else None."""
-    try:
-        win32clipboard.OpenClipboard()
+def get_clipboard_image_bytes() -> Optional[bytes]:
+    """
+    Return raw image bytes if the clipboard contains an image, else None.
+    Windows: reads CF_DIB.
+    Linux: reads via xclip (X11) or wl-paste (Wayland).
+    """
+    if IS_WINDOWS:
         try:
-            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_DIB):
-                return win32clipboard.GetClipboardData(win32con.CF_DIB)
-        finally:
-            win32clipboard.CloseClipboard()
-    except Exception:
+            win32clipboard.OpenClipboard()
+            try:
+                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_DIB):
+                    return win32clipboard.GetClipboardData(win32con.CF_DIB)
+            finally:
+                win32clipboard.CloseClipboard()
+        except Exception:
+            pass
+        return None
+
+    # Linux — only called after flag/type pre-check confirms something changed
+    try:
+        if _DISPLAY_SERVER == "wayland":
+            cmd = ["wl-paste", "--no-newline", "--type", "image/png"]
+        else:
+            cmd = ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"]
+        result = subprocess.run(cmd, capture_output=True, timeout=2)
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return None
 
 
 def set_clipboard_text(text: str) -> None:
-    win32clipboard.OpenClipboard()
+    """Write text to the system clipboard."""
+    if IS_WINDOWS:
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
+        finally:
+            win32clipboard.CloseClipboard()
+        return
+
+    # Linux
     try:
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
-    finally:
-        win32clipboard.CloseClipboard()
+        cmd = ["wl-copy"] if _DISPLAY_SERVER == "wayland" else ["xclip", "-selection", "clipboard"]
+        subprocess.run(cmd, input=text.encode(), check=True, timeout=2)
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        pass
 
 
 def save_clipboard_image() -> str:
     """
     Save the current clipboard image to the Screenshots folder as a PNG.
-    Returns the Windows path string of the saved file.
+    Returns the path string of the saved file.
     """
     SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     filepath = SCREENSHOTS_DIR / f"sspath_{timestamp}.png"
-    img = ImageGrab.grabclipboard()
-    if img is None:
+
+    if IS_WINDOWS:
+        img = ImageGrab.grabclipboard()
+        if img is None:
+            raise RuntimeError("No image on clipboard")
+        img.save(str(filepath), "PNG")
+        return str(filepath)
+
+    # Linux: re-use bytes already confirmed present by _watch_clipboard
+    data = get_clipboard_image_bytes()
+    if not data:
         raise RuntimeError("No image on clipboard")
-    img.save(str(filepath), "PNG")
+    filepath.write_bytes(data)
     return str(filepath)
+
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -147,26 +274,28 @@ class SsPathApp:
         self.enabled = False
         self.known_files: set = set()
         self.last_image_hash: Optional[str] = None
-        self.last_terminal: str = "unknown"  # tracks last active terminal window
+        self.last_terminal: str = "linux" if IS_LINUX else "unknown"
+        self._wayland_watcher: Optional[subprocess.Popen] = None
 
         # Snapshot existing screenshots so we don't trigger on old files
         SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
         self.known_files = {str(p) for p in SCREENSHOTS_DIR.glob("*.png")}
 
-        # DPI awareness — must be called before Tk() so Windows scales correctly
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor DPI aware
-        except Exception:
+        if IS_WINDOWS:
+            # DPI awareness — must be called before Tk() so Windows scales correctly
             try:
-                ctypes.windll.user32.SetProcessDPIAware()
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor DPI aware
             except Exception:
-                pass
+                try:
+                    ctypes.windll.user32.SetProcessDPIAware()
+                except Exception:
+                    pass
 
         # Tkinter window
         self.root = tk.Tk()
         self.root.title("sspath")
         self.root.resizable(False, False)
-        self.root.protocol("WM_DELETE_WINDOW", self._hide)
+        self.root.protocol("WM_DELETE_WINDOW", self._quit)
         self._build_ui()
 
         # System tray (runs on a daemon thread)
@@ -181,10 +310,14 @@ class SsPathApp:
                 lambda icon, item: self.root.after(0, self._show),
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit", self._quit),
+            pystray.MenuItem("Quit", lambda icon, item: self.root.after(0, self._quit)),
         )
-        self.tray = pystray.Icon("sspath", icon_img, "sspath — OFF", menu)
+        self.tray = pystray.Icon("sspath", icon_img, "sspath - OFF", menu)
         threading.Thread(target=self.tray.run, daemon=True).start()
+
+        # Wayland: start event-driven clipboard watcher (replaces per-poll wl-paste)
+        if IS_LINUX and _DISPLAY_SERVER == "wayland":
+            self._wayland_watcher = _start_wayland_watcher()
 
         # Start polling loop (stays on main thread via after())
         self.root.after(POLL_MS, self._poll)
@@ -235,11 +368,11 @@ class SsPathApp:
         if self.enabled:
             self.btn.config(text="● ON", bg="#2e7d32", activebackground="#1b5e20")
             self.status.set("Monitoring...")
-            self.tray.title = "sspath — ON"
+            self.tray.title = "sspath - ON"
         else:
             self.btn.config(text="● OFF", bg="#c62828", activebackground="#b71c1c")
             self.status.set("Idle")
-            self.tray.title = "sspath — OFF"
+            self.tray.title = "sspath - OFF"
 
     def _hide(self):
         self.root.withdraw()
@@ -250,6 +383,8 @@ class SsPathApp:
         self.root.focus_force()
 
     def _quit(self, icon=None, item=None):
+        if self._wayland_watcher is not None:
+            self._wayland_watcher.terminate()
         self.tray.stop()
         self.root.after(0, self.root.destroy)
 
@@ -274,15 +409,15 @@ class SsPathApp:
         self.root.after(POLL_MS, self._poll)
 
     def _track_terminal(self):
-        """Continuously remember the last foreground window that was a known terminal.
-        We store this so that when the Snipping Tool takes focus during Win+Shift+S,
-        we still know which terminal the user was in beforehand."""
+        """Remember the last foreground window that was a known terminal.
+        On Windows: needed because Snipping Tool steals focus during Win+Shift+S.
+        On Linux: always 'linux', so this is a no-op after initialisation."""
         result = detect_target_terminal()
         if result != "unknown":
             self.last_terminal = result
 
     def _watch_folder(self):
-        """Detect new PNGs in the Screenshots folder (Win+PrtSc scenario)."""
+        """Detect new PNGs in the Screenshots folder (Win+PrtSc / DE screenshot shortcut)."""
         try:
             current = {str(p) for p in SCREENSHOTS_DIR.glob("*.png")}
         except Exception:
@@ -300,8 +435,19 @@ class SsPathApp:
         self.status.set(f"[{self.last_terminal}] {Path(newest).name}")
 
     def _watch_clipboard(self):
-        """Detect new clipboard images (Win+Shift+S / PrtSc / Alt+PrtSc scenario)."""
-        data = get_clipboard_dib()
+        """Detect new clipboard images (clipboard-only screenshot tools)."""
+        if IS_LINUX:
+            if _DISPLAY_SERVER == "wayland":
+                # Skip the expensive wl-paste call unless the watcher flagged a change
+                if not _wayland_flag_changed():
+                    return
+            else:
+                # X11: cheap TARGETS pre-check avoids downloading image data every poll
+                if not _x11_clipboard_has_image():
+                    self.last_image_hash = None
+                    return
+
+        data = get_clipboard_image_bytes()
 
         if data is None:
             self.last_image_hash = None
@@ -317,22 +463,28 @@ class SsPathApp:
             return
 
         try:
-            win_path = save_clipboard_image()
+            path = save_clipboard_image()
         except Exception as exc:
             self.status.set(f"Save error: {exc}")
             return
 
         # Tell the folder watcher to ignore this file we just created
-        self.known_files.add(win_path)
+        self.known_files.add(path)
 
-        set_clipboard_text(format_path(win_path, self.last_terminal))
-        self.status.set(f"[{self.last_terminal}] {Path(win_path).name}")
-        # Clipboard now holds text, so next poll: get_clipboard_dib() → None → hash resets
+        set_clipboard_text(format_path(path, self.last_terminal))
+        self.status.set(f"[{self.last_terminal}] {Path(path).name}")
+        # Clipboard now holds text, so next poll: get_clipboard_image_bytes() → None → hash resets
 
     def run(self):
         self.root.mainloop()
+        # Ensure the process exits even if pystray's GTK loop lingers in its thread
+        os._exit(0)
+
+
+def main():
+    app = SsPathApp()
+    app.run()
 
 
 if __name__ == "__main__":
-    app = SsPathApp()
-    app.run()
+    main()
