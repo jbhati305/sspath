@@ -1,15 +1,20 @@
-# Kept for reference. Use pyproject.toml + uv for development.
-# uv sync  →  installs the right deps per platform automatically.
+# Reference only — dependencies are managed by uv via pyproject.toml.
+# To install: uv sync
+# To run:     uv run sspath
 
 # All platforms
 Pillow
 pystray
+
+# macOS only
+pyobjc
 
 # Windows only
 pywin32
 psutil
 
 # Linux system packages (not pip-installable):
-#   sudo apt install python3-tk
-#   sudo apt install xclip         # X11
-#   sudo apt install wl-clipboard  # Wayland
+#   brew install python-tk          (macOS, if using Homebrew Python)
+#   sudo apt install python3-tk     (Linux)
+#   sudo apt install xclip          (Linux X11)
+#   sudo apt install wl-clipboard   (Linux Wayland)
