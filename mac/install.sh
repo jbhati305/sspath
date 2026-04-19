@@ -35,7 +35,8 @@ fi
 
 echo "[1/3] Setting up environment in $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR"
-cp sspath.py "$INSTALL_DIR/sspath.py"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cp "$SCRIPT_DIR/../sspath.py" "$INSTALL_DIR/sspath.py"
 
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip

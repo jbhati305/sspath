@@ -12,6 +12,10 @@ Linux:
   - Always the native path: /home/user/Pictures/Screenshots/...
   - Supports X11 (xclip) and Wayland (wl-clipboard)
 
+macOS:
+  - Always the native path; reads screenshot dir from system preferences
+  - Supports both saved-to-file and clipboard-only screenshots
+
 Handles two screenshot scenarios:
   1. Saved-to-file  → watches the Screenshots folder for new PNGs
   2. Clipboard-only → saves the image, then copies the path
@@ -20,10 +24,12 @@ Windows dependencies: pip install pywin32 Pillow pystray psutil
 Linux dependencies:   pip install Pillow pystray
                       apt install xclip        (X11)
                       apt install wl-clipboard  (Wayland)
+macOS dependencies:   pip install Pillow pystray pyobjc
 Run from native Python (not WSL on Windows).
 """
 
 import atexit
+import io
 import os
 import sys
 import hashlib
@@ -40,6 +46,7 @@ import pystray
 
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
+IS_MAC = sys.platform == "darwin"
 
 if IS_WINDOWS:
     import ctypes
@@ -48,6 +55,8 @@ if IS_WINDOWS:
     import win32gui
     import win32process
     import psutil
+
+if IS_WINDOWS or IS_MAC:
     from PIL import ImageGrab
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -57,6 +66,21 @@ POLL_MS = 500
 if IS_WINDOWS:
     USERNAME = os.environ.get("USERNAME") or getpass.getuser()
     SCREENSHOTS_DIR = Path(f"C:\\Users\\{USERNAME}\\Pictures\\Screenshots")
+elif IS_MAC:
+    def _default_screenshots_dir() -> Path:
+        try:
+            result = subprocess.run(
+                ["defaults", "read", "com.apple.screencapture", "location"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0:
+                p = Path(result.stdout.strip()).expanduser()
+                if p.is_dir():
+                    return p
+        except Exception:
+            pass
+        return Path.home() / "Desktop"
+    SCREENSHOTS_DIR = _default_screenshots_dir()
 else:
     SCREENSHOTS_DIR = Path.home() / "Pictures" / "Screenshots"
 
@@ -81,8 +105,8 @@ def to_wsl_path(win_path: str) -> str:
 
 def format_path(path: str, target: str) -> str:
     """Return path string appropriate for the detected terminal."""
-    if IS_LINUX:
-        return path  # always a native Linux path
+    if IS_LINUX or IS_MAC:
+        return path
     if target == "wsl":
         return to_wsl_path(path)
     if target == "windows":
@@ -96,12 +120,14 @@ def format_path(path: str, target: str) -> str:
 def detect_target_terminal() -> str:
     """
     Determine the terminal type in use.
-    Linux always returns 'linux'.
+    Linux/macOS always return a fixed value.
     Windows inspects the foreground window's process tree.
-    Returns 'wsl', 'windows', 'linux', or 'unknown'.
+    Returns 'wsl', 'windows', 'linux', 'mac', or 'unknown'.
     """
     if IS_LINUX:
         return "linux"
+    if IS_MAC:
+        return "mac"
 
     try:
         hwnd = win32gui.GetForegroundWindow()
@@ -195,6 +221,7 @@ def get_clipboard_image_bytes() -> Optional[bytes]:
     """
     Return raw image bytes if the clipboard contains an image, else None.
     Windows: reads CF_DIB.
+    macOS: uses PIL's native clipboard integration.
     Linux: reads via xclip (X11) or wl-paste (Wayland).
     """
     if IS_WINDOWS:
@@ -208,6 +235,17 @@ def get_clipboard_image_bytes() -> Optional[bytes]:
         except Exception:
             pass
         return None
+
+    if IS_MAC:
+        try:
+            img = ImageGrab.grabclipboard()
+            if not isinstance(img, Image.Image):
+                return None
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            return buf.getvalue()
+        except Exception:
+            return None
 
     # Linux — only called after flag/type pre-check confirms something changed
     try:
@@ -234,6 +272,13 @@ def set_clipboard_text(text: str) -> None:
             win32clipboard.CloseClipboard()
         return
 
+    if IS_MAC:
+        try:
+            subprocess.run(["pbcopy"], input=text.encode(), check=True, timeout=2)
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        return
+
     # Linux
     try:
         cmd = ["wl-copy"] if _DISPLAY_SERVER == "wayland" else ["xclip", "-selection", "clipboard"]
@@ -251,9 +296,9 @@ def save_clipboard_image() -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     filepath = SCREENSHOTS_DIR / f"sspath_{timestamp}.png"
 
-    if IS_WINDOWS:
+    if IS_WINDOWS or IS_MAC:
         img = ImageGrab.grabclipboard()
-        if img is None:
+        if not isinstance(img, Image.Image):
             raise RuntimeError("No image on clipboard")
         img.save(str(filepath), "PNG")
         return str(filepath)
@@ -274,7 +319,7 @@ class SsPathApp:
         self.enabled = False
         self.known_files: set = set()
         self.last_image_hash: Optional[str] = None
-        self.last_terminal: str = "linux" if IS_LINUX else "unknown"
+        self.last_terminal: str = "linux" if IS_LINUX else ("mac" if IS_MAC else "unknown")
         self._wayland_watcher: Optional[subprocess.Popen] = None
 
         # Snapshot existing screenshots so we don't trigger on old files
@@ -315,7 +360,6 @@ class SsPathApp:
         self.tray = pystray.Icon("sspath", icon_img, "sspath - OFF", menu)
         threading.Thread(target=self.tray.run, daemon=True).start()
 
-        # Wayland: start event-driven clipboard watcher (replaces per-poll wl-paste)
         if IS_LINUX and _DISPLAY_SERVER == "wayland":
             self._wayland_watcher = _start_wayland_watcher()
 
@@ -325,22 +369,25 @@ class SsPathApp:
     # ── UI ─────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
+        font_family = "Helvetica Neue" if IS_MAC else "Segoe UI"
+        cursor = "pointinghand" if IS_MAC else "hand2"
+
         self.root.minsize(480, 220)
         frame = tk.Frame(self.root, padx=32, pady=24)
         frame.pack(fill="both", expand=True)
 
-        tk.Label(frame, text="sspath", font=("Segoe UI", 18, "bold")).pack()
+        tk.Label(frame, text="sspath", font=(font_family, 18, "bold")).pack()
         tk.Label(
             frame,
             text="Screenshot → clipboard path",
-            font=("Segoe UI", 11),
+            font=(font_family, 11),
             fg="#777",
         ).pack(pady=(4, 18))
 
         self.btn = tk.Button(
             frame,
             text="● OFF",
-            font=("Segoe UI", 13, "bold"),
+            font=(font_family, 13, "bold"),
             width=12,
             height=2,
             command=self._toggle,
@@ -348,7 +395,7 @@ class SsPathApp:
             fg="white",
             activebackground="#b71c1c",
             relief="flat",
-            cursor="hand2",
+            cursor=cursor,
             bd=0,
         )
         self.btn.pack()
@@ -357,7 +404,7 @@ class SsPathApp:
         tk.Label(
             frame,
             textvariable=self.status,
-            font=("Segoe UI", 9),
+            font=(font_family, 9),
             fg="#888",
             wraplength=420,
             justify="center",
@@ -391,8 +438,13 @@ class SsPathApp:
     @staticmethod
     def _make_tray_icon() -> Image.Image:
         """Create a simple 64×64 tray icon (dark blue with white 'i')."""
-        img = Image.new("RGB", (64, 64), "#1a237e")
-        d = ImageDraw.Draw(img)
+        if IS_MAC:
+            img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            d.ellipse([4, 4, 60, 60], fill="#1a237e")
+        else:
+            img = Image.new("RGB", (64, 64), "#1a237e")
+            d = ImageDraw.Draw(img)
         d.ellipse([22, 6, 42, 26], fill="white")   # dot of 'i'
         d.rectangle([22, 32, 42, 58], fill="white") # stem of 'i'
         return img
@@ -436,7 +488,7 @@ class SsPathApp:
 
     def _watch_clipboard(self):
         """Detect new clipboard images (clipboard-only screenshot tools)."""
-        if IS_LINUX:
+        if IS_LINUX:  # macOS uses ImageGrab.grabclipboard() — no pre-check needed
             if _DISPLAY_SERVER == "wayland":
                 # Skip the expensive wl-paste call unless the watcher flagged a change
                 if not _wayland_flag_changed():
