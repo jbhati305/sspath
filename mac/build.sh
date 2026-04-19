@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
 # build.sh — builds a standalone macOS .app bundle
 # Output: dist/sspath.app  (drag to /Applications to install)
-# Run from the mac/ directory: bash build.sh
+# Run from anywhere: bash mac/build.sh
 
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_SCRIPT="$SCRIPT_DIR/../sspath.py"
 
 echo "=== sspath macOS build ==="
 echo
 
 if ! command -v python3 &>/dev/null; then
     echo "Error: python3 not found."
+    exit 1
+fi
+
+if [ ! -f "$ROOT_SCRIPT" ]; then
+    echo "Error: sspath.py not found at $ROOT_SCRIPT"
     exit 1
 fi
 
@@ -26,7 +34,7 @@ python3 -m PyInstaller \
     --hidden-import AppKit \
     --hidden-import Foundation \
     --hidden-import objc \
-    sspath.py
+    "$ROOT_SCRIPT"
 
 # Set LSUIElement so the app doesn't appear in the Dock (menu-bar only)
 PLIST="dist/sspath.app/Contents/Info.plist"
