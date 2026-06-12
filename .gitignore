@@ -11,3 +11,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+CLAUDE.md
+.claude
+.venv
+.mypy_cache

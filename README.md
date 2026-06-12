@@ -1,15 +1,8 @@
 # sspath
-![Video Project 1](https://github.com/user-attachments/assets/33eba580-bc72-490c-a9c3-ec515bc290fd)
 
 **Takes a screenshot → puts the file path in your clipboard.**
 
-No more dragging files or hunting through File Explorer. sspath watches for new screenshots and instantly replaces the clipboard image with the path to that file — formatted for whichever terminal you were just in. Created to streamline Claude Code workflow.
-
----
-
-## Download
-
-Go to [Releases](../../releases) and download `sspath.exe`. Currently Windows only.
+No more dragging files or hunting through Finder / File Explorer. sspath watches for new screenshots and instantly copies the file path to your clipboard. Created to streamline [Claude Code](https://claude.ai/code) workflow.
 
 ---
 
@@ -17,47 +10,67 @@ Go to [Releases](../../releases) and download `sspath.exe`. Currently Windows on
 
 | You do | sspath does |
 |---|---|
-| Win + PrtSc | Detects the new file, copies its path |
-| Win + Shift + S | Saves the clipboard image, copies its path |
-| PrtSc / Alt + PrtSc | Saves the clipboard image, copies its path |
+| Cmd+Shift+3 / Cmd+Shift+4 | Detects the new file, copies its path |
+| Cmd+Ctrl+Shift+3 / Cmd+Ctrl+Shift+4 | Saves the clipboard image, copies its path |
+| Win+PrtSc | Detects the new file, copies its path |
+| Win+Shift+S / PrtSc | Saves the clipboard image, copies its path |
 
-The path is formatted automatically based on your terminal:
+---
 
-| Terminal | Path you get |
-|---|---|
-| WSL | `/mnt/c/Users/you/Pictures/Screenshots/...` |
-| PowerShell / CMD | `C:\Users\you\Pictures\Screenshots\...` |
-| Unknown | Both formats, one per line — pick the one you need |
+## Install
+
+### macOS
+
+```bash
+bash mac/install.sh
+```
+
+Requires Python 3.10+ with tkinter. If using Homebrew Python:
+```bash
+brew install python-tk
+```
+
+### Linux
+
+```bash
+bash install.sh
+```
+
+Requires: `python3-venv`, `python3-tk`, and either `xclip` (X11) or `wl-clipboard` (Wayland) — the installer handles these automatically on Debian/Ubuntu.
 
 ---
 
 ## Usage
 
-1. Run `sspath.exe`
+1. Run `sspath` (or `uv run sspath` from source)
 2. Click **ON**
 3. Take a screenshot — the path is already in your clipboard
-4. Paste directly into your terminal
+4. Paste directly into your terminal or editor
 
 Closing the window sends sspath to the system tray. It keeps running until you right-click the tray icon and select **Quit**.
 
-Toggle **OFF** any time you want to take a normal screenshot without path conversion.
+Toggle **OFF** any time you want a normal screenshot without path conversion.
 
 ---
 
 ## Run from source
 
-Requires Windows Python (not WSL).
+Requires [uv](https://docs.astral.sh/uv/).
 
-```
-pip install pywin32 Pillow pystray psutil
-python sspath.py
-```
-
-## Build the exe yourself
-
-```
-pip install pyinstaller
-pyinstaller --onefile --windowed --hidden-import win32clipboard --hidden-import win32con --hidden-import win32gui --hidden-import win32process --collect-all win32 sspath.py
+```bash
+uv run sspath
 ```
 
-Output is in `dist/sspath.exe`.
+uv installs the right dependencies for your platform automatically — no manual `pip install` needed.
+
+---
+
+## Uninstall
+
+```bash
+# macOS
+bash mac/uninstall.sh
+
+# Linux
+bash uninstall.sh
+```

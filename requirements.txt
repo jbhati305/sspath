@@ -1,4 +1,20 @@
-pywin32
+# Reference only — dependencies are managed by uv via pyproject.toml.
+# To install: uv sync
+# To run:     uv run sspath
+
+# All platforms
 Pillow
 pystray
+
+# macOS only
+pyobjc
+
+# Windows only
+pywin32
 psutil
+
+# Linux system packages (not pip-installable):
+#   brew install python-tk          (macOS, if using Homebrew Python)
+#   sudo apt install python3-tk     (Linux)
+#   sudo apt install xclip          (Linux X11)
+#   sudo apt install wl-clipboard   (Linux Wayland)
